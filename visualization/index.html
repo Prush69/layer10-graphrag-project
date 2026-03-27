@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Layer10 | Grounded Truth</title>
+
+    <!-- Premium Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+        rel="stylesheet">
+
+    <!-- D3.js -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <!-- Icons (Lucide) -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+
+    <!-- Main Graph Canvas -->
+    <main class="graph-container">
+        <svg id="network-graph"></svg>
+    </main>
+
+    <!-- Top Left Panel: Control Center -->
+    <aside class="glass-panel left-panel">
+        <header class="panel-header">
+            <div class="logo-area">
+                <i data-lucide="network"></i>
+                <h1>Layer10</h1>
+            </div>
+            <div class="stats-mini">
+                <span id="stat-nodes">0</span> Entities | <span id="stat-edges">0</span> Claims
+            </div>
+        </header>
+
+        <div class="panel-body scrollable">
+            <div class="filter-section">
+                <label><i data-lucide="sliders-horizontal"></i> Confidence Gate: <span id="conf-val"
+                        class="mono-cyan">0.40</span></label>
+                <input type="range" id="conf-slider" min="0" max="1" step="0.05" value="0.40">
+            </div>
+
+            <div class="filter-section">
+                <label>Entities Plotted</label>
+                <div class="checkbox-grid" id="entity-filters"></div>
+            </div>
+
+            <div class="filter-section">
+                <label>Relationships</label>
+                <div class="checkbox-grid" id="claim-filters"></div>
+            </div>
+
+            <div class="legend-section">
+                <div class="leg-row">
+                    <div class="leg-color"
+                        style="background: var(--color-active-truth); box-shadow: 0 0 8px var(--color-active-truth);">
+                    </div> <span>Active Truth</span>
+                </div>
+                <div class="leg-row">
+                    <div class="leg-color" style="background: var(--color-superseded);"></div> <span>Superseded</span>
+                </div>
+                <div class="leg-row">
+                    <div class="leg-color" style="background: var(--color-redacted);"></div> <span>Redacted</span>
+                </div>
+                <div class="leg-row">
+                    <div class="leg-shape entity"></div> <span>Entity Node</span>
+                </div>
+                <div class="leg-row">
+                    <div class="leg-shape event"></div> <span>Event/Claim Node</span>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Right Panel: The Forensic Inspector -->
+    <aside class="glass-panel right-panel" id="inspector-panel">
+        <button id="close-inspector" class="icon-btn close-btn"><i data-lucide="x"></i></button>
+
+        <div class="inspector-header">
+            <div class="type-badge" id="insp-type">TYPE</div>
+            <h2 id="insp-title">Select a Node</h2>
+            <div class="mono-meta" id="insp-id">node_uuid</div>
+        </div>
+
+        <div class="panel-body scrollable hidden" id="insp-content">
+
+            <!-- Canonical Aliases -->
+            <div class="data-block hidden" id="block-merges">
+                <h3><i data-lucide="git-merge"></i> Canonical Aliases</h3>
+                <div class="terminal-box" id="merge-list"></div>
+            </div>
+
+            <!-- Grounding Evidence -->
+            <div class="data-block hidden" id="block-evidence">
+                <div class="flex-between">
+                    <h3><i data-lucide="microscope"></i> Verbatim Evidence</h3>
+                    <span class="count-badge" id="ev-count">0</span>
+                </div>
+                <div class="evidence-list" id="evidence-list"></div>
+            </div>
+
+            <!-- Metadata Dump -->
+            <div class="data-block">
+                <h3><i data-lucide="database"></i> Graph JSON Payload</h3>
+                <pre class="terminal-box" id="insp-json"></pre>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Bottom Panel: Time Travel Bitemporal Slider -->
+    <div class="glass-panel timeline-panel">
+        <i data-lucide="history" class="time-icon"></i>
+        <div class="slider-wrapper">
+            <div class="time-readout">
+                <span class="mono-meta" id="time-display-min">2018-01</span>
+                <span class="mono-cyan time-current" id="time-display">Current</span>
+            </div>
+            <input type="range" id="time-slider" min="0" max="100" value="100">
+        </div>
+    </div>
+
+    <!-- Zoom Controls -->
+    <div class="zoom-controls">
+        <button id="zoom-in" class="glass-btn"><i data-lucide="zoom-in"></i></button>
+        <button id="zoom-fit" class="glass-btn"><i data-lucide="maximize"></i></button>
+        <button id="zoom-out" class="glass-btn"><i data-lucide="zoom-out"></i></button>
+    </div>
+
+    <!-- Initialization Loading -->
+    <div id="loading-overlay" class="overlay">
+        <div class="pulse-ring"></div>
+        <p class="mono-cyan">Initializing Bitemporal Memory...</p>
+    </div>
+
+    <script src="app.js"></script>
+    <script>lucide.createIcons();</script>
+</body>
+
+</html>
