@@ -15,8 +15,11 @@ highly parallelized LangGraph Swarm.
 
 import json
 import time
-from typing import List, Dict, Any, TypedDict
+import hashlib
+import operator
+from typing import List, Dict, Any, TypedDict, Annotated
 from pathlib import Path
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -30,17 +33,22 @@ except ImportError:
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
-from schema.ontology import ExtractionResult, Entity, Assertion, Evidence
+from schema.ontology import ExtractionResult, Entity, Assertion, Evidence, EntityType, AssertionType, ClaimType, SupportStrength
 
 # --- 1. Define the LangGraph State ---
 
 class ExtractionState(TypedDict):
-    """The state passed between nodes in the LangGraph."""
+    """
+    The state passed between nodes in the LangGraph.
+    Using Annotated[..., operator.add] to ensure that parallel or
+    sequential node executions correctly aggregate outputs (reduces)
+    instead of overwriting the lists.
+    """
     files_to_process: List[Path]
     current_batch: List[Path]
-    raw_results: List[Dict[str, Any]]
-    final_results: List[ExtractionResult]
-    errors: List[str]
+    raw_results: Annotated[List[Dict[str, Any]], operator.add]
+    final_results: Annotated[List[ExtractionResult], operator.add]
+    errors: Annotated[List[str], operator.add]
 
 # --- 2. Define the Pydantic Schema for the LLM ---
 
@@ -59,14 +67,16 @@ class GraphExtraction(BaseModel):
 def splinter_node(state: ExtractionState) -> ExtractionState:
     """Splinter the document/corpus into parallel chunks (batches)."""
     batch_size = config.EXTRACTION_BATCH_SIZE
-    files = state["files_to_process"]
+    files = state.get("files_to_process", [])
 
     if not files:
+        # Return empty explicitly overwriting the keys to stop loop
         return {"current_batch": [], "files_to_process": []}
 
     current_batch = files[:batch_size]
     remaining = files[batch_size:]
 
+    # In LangGraph, returning dict keys not using operator.add overwrites the state
     return {
         "current_batch": current_batch,
         "files_to_process": remaining
@@ -76,7 +86,7 @@ def extract_node(state: ExtractionState) -> ExtractionState:
     """The Extraction Swarm: Process chunks using Groq LPUs."""
     batch = state.get("current_batch", [])
     if not batch:
-        return {"raw_results": []}
+        return {}
 
     try:
         # Initialize Groq Llama 3.1 70B with structured output
@@ -100,15 +110,17 @@ def extract_node(state: ExtractionState) -> ExtractionState:
             If you cannot find verbatim evidence, do not create the relationship.
 
             Log Data:
-            {text_chunk[:20000]}
+            {str(text_chunk)[:20000]}
             """
 
             print(f"  [Groq LPU] Extracting {file_path.name}...")
             result = structured_llm.invoke(prompt)
 
+            # Add to the reducers list
             raw_results.append({
                 "source_id": file_path.name,
-                "data": result.model_dump() if result else {}
+                "data": result.model_dump() if result else {},
+                "raw_text": str(text_chunk)[:20000]
             })
 
             # Groq handles 30 RPM, so 2s stagger is completely safe
@@ -118,24 +130,110 @@ def extract_node(state: ExtractionState) -> ExtractionState:
 
     except Exception as e:
         print(f"  [Groq Error] {e}")
-        return {"errors": [str(e)], "raw_results": []}
+        return {"errors": [str(e)]}
 
 def map_to_ontology_node(state: ExtractionState) -> ExtractionState:
-    """Map the Groq extraction back to our complex Ontology."""
+    """
+    CRITICAL TRANSLATION LAYER
+    Map the Groq 'Edge' extraction back to our complex system Ontology.
+    Without this, the deduplication and Neo4j graph stores will crash.
+    """
+    # Grab ONLY the current batch of raw_results for this step if possible,
+    # but since raw_results accumulates, we need to map the ones we haven't mapped.
+    # To keep it simple, we will just use the last extracted batch.
+    # LangGraph best practice for this linear flow is to clear raw_results or process them all at once.
+    # To prevent double processing, we process the state's raw_results but don't append to it.
+    # For now, we process all available raw_results that haven't been saved.
+
     raw_results = state.get("raw_results", [])
-    final_results = state.get("final_results", [])
+    final_results = []
 
     for res in raw_results:
         source_id = res["source_id"]
-        data = res["data"]
-
         issue_num = source_id.split("_")[1].replace(".json", "")
-        result_path = config.EXTRACTION_DIR / f"langgraph_extraction_{issue_num}.json"
+        system_source_id = f"issue-{issue_num}"
+        result_path = config.EXTRACTION_DIR / f"extraction_{issue_num}.json"
 
+        if result_path.exists():
+            continue # already processed
+
+        data = res["data"]
+        raw_text = res.get("raw_text", "")
+
+        entities = []
+        assertions = []
+
+        # 1. Translate Nodes to Entities
+        for node_name in data.get("nodes", []):
+            entity_id = f"entity::{hashlib.md5(node_name.encode()).hexdigest()[:8]}"
+            entities.append(Entity(
+                id=entity_id,
+                type=EntityType.COMPONENT, # Defaulting to component for unstructured nodes
+                name=node_name,
+                aliases=[node_name]
+            ))
+
+        # 2. Translate Edges to Assertions
+        for edge_data in data.get("edges", []):
+            subj = edge_data.get("source_entity", "")
+            obj = edge_data.get("target_entity", "")
+            rel = edge_data.get("relationship", "")
+            excerpt = edge_data.get("evidence", "")
+
+            if not subj or not obj or not excerpt:
+                continue
+
+            subj_id = f"entity::{hashlib.md5(subj.encode()).hexdigest()[:8]}"
+            obj_id = f"entity::{hashlib.md5(obj.encode()).hexdigest()[:8]}"
+
+            # Create Strict Evidence
+            ev = Evidence(
+                artifact_version_id=f"{system_source_id}-v1",
+                source_id=system_source_id,
+                excerpt=excerpt[:200],
+                confidence=0.9,
+                support_strength=SupportStrength.EXPLICIT,
+                source_type="issue"
+            )
+
+            # Calculate offsets for grounding verification
+            idx = raw_text.find(excerpt)
+            if idx != -1:
+                ev.offset_start = idx
+                ev.offset_end = idx + len(excerpt)
+
+            # Create Semantic Assertion
+            aid = hashlib.md5(f"{subj}_{obj}_{rel}".encode()).hexdigest()[:8]
+            assertions.append(Assertion(
+                id=f"assertion::{aid}",
+                artifact_version_id=f"{system_source_id}-v1",
+                asserted_by="langgraph-swarm",
+                type=AssertionType.OBSERVATION,
+                claim_type=ClaimType.RELATED_TO,
+                subject_id=subj_id,
+                object_id=obj_id,
+                properties={"description": rel},
+                timestamp=datetime.utcnow().isoformat(),
+                confidence=0.9,
+                evidence=[ev]
+            ))
+
+        # Construct the final expected output schema
+        extraction_result = ExtractionResult(
+            source_id=system_source_id,
+            model="llama-3.1-70b-versatile",
+            extracted_at=datetime.utcnow().isoformat(),
+            raw_text_length=len(raw_text),
+            entities=entities,
+            assertions=assertions
+        )
+
+        # Save output to disk perfectly matching the classic pipeline's expected format
         with open(result_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+            json.dump(extraction_result.model_dump(), f, indent=2, ensure_ascii=False)
 
-        print(f"  [Mapped] Saved LangGraph results for {source_id} to {result_path}")
+        print(f"  [Mapped] Saved mapped LangGraph ExtractionResult for {system_source_id} to {result_path}")
+        final_results.append(extraction_result)
 
     return {"final_results": final_results}
 
