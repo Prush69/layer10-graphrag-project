@@ -7,7 +7,7 @@ A production-grade pipeline that turns unstructured communication data (GitHub I
 ## The System Architecture (Phase 1)
 Instead of relying on monolithic scripts, this system provides two extraction layers:
 1. **The Classic Pipeline (`extraction/pipeline.py`)**: A highly optimized Groq/Llama batch processor designed for free-tier constraints and deterministic artifact offsets.
-2. **The LangGraph Extraction Swarm (`extraction/langgraph_pipeline.py`)**: A multi-stage ingestion pipeline designed for speed and robustness using LangChain/LangGraph. It splinters large documents concurrently and processes them via **Gemini 2.0 Flash**. By leveraging its massive context window and native JSON structuring, we extract entities and relationships directly using strict `Pydantic` models and verbatim evidence requirements.
+2. **The LangGraph Extraction Swarm (`extraction/langgraph_pipeline.py`)**: A multi-stage ingestion pipeline designed for speed and robustness using LangChain/LangGraph. It splinters large documents concurrently and processes them via **Groq (Llama 3.1 70B)**. By leveraging its massive context window and native JSON structuring, we extract entities and relationships directly using strict `Pydantic` models and verbatim evidence requirements.
 
 ## The Query Router (The Inference API)
 The system includes a **FastAPI microservice** (`retrieval/api.py`) designed to be deployed on **Google Cloud Run**. When a user queries the graph, the routing logic determines whether the request requires "local" context (vector search) or "global" context (traversing the Neo4j graph topology).
@@ -27,7 +27,7 @@ pip install -r requirements.txt
 
 # 2. Configure API keys
 copy .env.example .env
-# Edit .env and set your GOOGLE_API_KEY (for Gemini/LangGraph) and GITHUB_TOKEN
+# Edit .env and set your GROQ_API_KEY (for Gemini/LangGraph) and GITHUB_TOKEN
 
 # 3. (Optional but Recommended) Start Neo4j Database
 docker compose up -d
@@ -40,7 +40,7 @@ To run the classic deterministic pipeline (Full end-to-end):
 python run.py --step all
 ```
 
-To run the Gemini 2.0 Flash extraction swarm:
+To run the Groq (Llama 3.1 70B) extraction swarm:
 ```bash
 # Run the parallelized LangGraph pipeline
 python extraction/langgraph_pipeline.py --limit 10
@@ -73,7 +73,7 @@ By enforcing the `evidence` field, we ensure the graph is durable and mathematic
 |-----------|---------|
 | `corpus/` | GitHub Issues downloader |
 | `schema/` | Strict Pydantic Ontology (entity types, claim types, verbatim evidence) |
-| `extraction/` | Classic pipeline & LangGraph + Gemini 2.0 Flash swarm (`langgraph_pipeline.py`) |
+| `extraction/` | Classic pipeline & LangGraph + Groq (Llama 3.1 70B) swarm (`langgraph_pipeline.py`) |
 | `dedup/` | Union-Find Entity Canonicalization |
 | `graph/` | Memory graph (Neo4j), persistence, temporal logic |
 | `retrieval/` | Hybrid FAISS search, FastAPI Router (`api.py`) |

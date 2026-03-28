@@ -1,16 +1,16 @@
 """
-LangGraph extraction pipeline orchestrator using Gemini 2.0 Flash.
+LangGraph extraction pipeline orchestrator using Groq (Llama 3.1 70B).
 
 This module implements Phase 1 of the Layer10 blueprint:
 A multi-stage ingestion pipeline built with LangGraph to splinter
-and process documents concurrently using Gemini 2.0 Flash.
+and process documents concurrently using Groq's LPUs.
 
-Why Flash?
-In production GraphRAG, you don't use high-latency, expensive "Pro" models
-(like Gemini 1.5 Pro) for structured extraction tasks. Gemini Flash provides
-a 1M+ token context window, significantly lower latency, and most importantly
-for a free-tier CV project: 15 Requests Per Minute (RPM) vs Pro's 2 RPM.
-This allows true parallel execution of the LangGraph Swarm.
+Why Groq?
+In production GraphRAG, generation speed (Tokens Per Second) is the primary
+bottleneck when extracting hundreds of JSON relationships. Groq provides
+800+ TPS on free-tier. While Gemini has a huge context window, Groq's
+insane speed and 30 RPM free tier makes it the ultimate engine for a
+highly parallelized LangGraph Swarm.
 """
 
 import json
@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 # Mocking LangChain imports for the CV architecture
 try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
+    from langchain_groq import ChatGroq
     from langgraph.graph import StateGraph, START, END
 except ImportError:
     print("Warning: langchain or langgraph not installed. Run `pip install -r requirements.txt`")
@@ -73,15 +73,15 @@ def splinter_node(state: ExtractionState) -> ExtractionState:
     }
 
 def extract_node(state: ExtractionState) -> ExtractionState:
-    """The Extraction Swarm: Process chunks using Gemini 2.0 Flash."""
+    """The Extraction Swarm: Process chunks using Groq LPUs."""
     batch = state.get("current_batch", [])
     if not batch:
         return {"raw_results": []}
 
     try:
-        # Initialize Gemini Flash with structured output
-        # Flash is drastically cheaper, faster, and allows 15 RPM free tier parallelization
-        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash-exp", temperature=0)
+        # Initialize Groq Llama 3.1 70B with structured output
+        # Groq's free tier (30 RPM) and 800+ TPS make it perfect for LangGraph
+        llm = ChatGroq(model="llama-3.1-70b-versatile", temperature=0)
         structured_llm = llm.with_structured_output(GraphExtraction)
 
         raw_results = []
@@ -91,6 +91,7 @@ def extract_node(state: ExtractionState) -> ExtractionState:
 
             text_chunk = data.get("issue", {}).get("body", "")
 
+            # Groq context limit is smaller (128k/8k), so we truncate safely
             prompt = f"""
             You are a senior data architect extracting organizational memory.
             Analyze the following communication log.
@@ -99,10 +100,10 @@ def extract_node(state: ExtractionState) -> ExtractionState:
             If you cannot find verbatim evidence, do not create the relationship.
 
             Log Data:
-            {text_chunk[:100000]}
+            {text_chunk[:20000]}
             """
 
-            print(f"  [Gemini Flash] Extracting {file_path.name}...")
+            print(f"  [Groq LPU] Extracting {file_path.name}...")
             result = structured_llm.invoke(prompt)
 
             raw_results.append({
@@ -110,17 +111,17 @@ def extract_node(state: ExtractionState) -> ExtractionState:
                 "data": result.model_dump() if result else {}
             })
 
-            # Flash handles higher burst limits (15 RPM vs 2 RPM for Pro)
-            time.sleep(4) # 60s / 15 RPM = 4s stagger
+            # Groq handles 30 RPM, so 2s stagger is completely safe
+            time.sleep(2)
 
         return {"raw_results": raw_results}
 
     except Exception as e:
-        print(f"  [Gemini Error] {e}")
+        print(f"  [Groq Error] {e}")
         return {"errors": [str(e)], "raw_results": []}
 
 def map_to_ontology_node(state: ExtractionState) -> ExtractionState:
-    """Map the Gemini extraction back to our complex Ontology."""
+    """Map the Groq extraction back to our complex Ontology."""
     raw_results = state.get("raw_results", [])
     final_results = state.get("final_results", [])
 
@@ -171,10 +172,10 @@ def run_langgraph_pipeline(limit: int = None):
         issue_files = issue_files[:limit]
 
     print(f"\n{'='*60}")
-    print(f"LANGGRAPH + GEMINI FLASH EXTRACTION PIPELINE")
+    print(f"LANGGRAPH + GROQ LPU EXTRACTION PIPELINE")
     print(f"{'='*60}")
     print(f"  Target: {len(issue_files)} files")
-    print(f"  Model: gemini-2.0-flash-exp")
+    print(f"  Model: Llama 3.1 70B (Groq)")
 
     try:
         app = build_extraction_graph()
@@ -191,7 +192,7 @@ def run_langgraph_pipeline(limit: int = None):
             for key, value in output.items():
                 print(f"Finished node: {key}")
 
-        print("\nExtraction Complete via LangGraph!")
+        print("\nExtraction Complete via LangGraph (Groq LPU)!")
     except Exception as e:
         print(f"Could not build or run graph: {e}")
 
@@ -202,8 +203,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     import os
-    if not os.getenv("GOOGLE_API_KEY"):
-        print("WARNING: GOOGLE_API_KEY not set. LangGraph/Gemini will fail.")
-        print("Set it using: export GOOGLE_API_KEY='your_key'")
+    if not os.getenv("GROQ_API_KEY"):
+        print("WARNING: GROQ_API_KEY not set. LangGraph/Groq will fail.")
+        print("Set it using: export GROQ_API_KEY='your_key'")
     else:
         run_langgraph_pipeline(limit=args.limit)
