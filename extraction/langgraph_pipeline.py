@@ -1,13 +1,16 @@
 """
-LangGraph extraction pipeline orchestrator using Gemini 1.5 Pro.
+LangGraph extraction pipeline orchestrator using Gemini 2.0 Flash.
 
 This module implements Phase 1 of the Layer10 blueprint:
 A multi-stage ingestion pipeline built with LangGraph to splinter
-and process documents concurrently using Gemini 1.5 Pro's massive context.
+and process documents concurrently using Gemini 2.0 Flash.
 
-It enforces strict schema design (via Pydantic) and verbatim evidence
-requirements, effectively replacing the standalone script architecture
-with a production-grade GCP-native graph workflow.
+Why Flash?
+In production GraphRAG, you don't use high-latency, expensive "Pro" models
+(like Gemini 1.5 Pro) for structured extraction tasks. Gemini Flash provides
+a 1M+ token context window, significantly lower latency, and most importantly
+for a free-tier CV project: 15 Requests Per Minute (RPM) vs Pro's 2 RPM.
+This allows true parallel execution of the LangGraph Swarm.
 """
 
 import json
@@ -18,7 +21,6 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 # Mocking LangChain imports for the CV architecture
-# (assuming these are available in a GCP environment after pip install)
 try:
     from langchain_google_genai import ChatGoogleGenerativeAI
     from langgraph.graph import StateGraph, START, END
@@ -71,14 +73,15 @@ def splinter_node(state: ExtractionState) -> ExtractionState:
     }
 
 def extract_node(state: ExtractionState) -> ExtractionState:
-    """The Extraction Swarm: Process chunks using Gemini 1.5 Pro."""
+    """The Extraction Swarm: Process chunks using Gemini 2.0 Flash."""
     batch = state.get("current_batch", [])
     if not batch:
         return {"raw_results": []}
 
     try:
-        # Initialize Gemini 1.5 Pro with structured output
-        llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0)
+        # Initialize Gemini Flash with structured output
+        # Flash is drastically cheaper, faster, and allows 15 RPM free tier parallelization
+        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash-exp", temperature=0)
         structured_llm = llm.with_structured_output(GraphExtraction)
 
         raw_results = []
@@ -99,7 +102,7 @@ def extract_node(state: ExtractionState) -> ExtractionState:
             {text_chunk[:100000]}
             """
 
-            print(f"  [Gemini] Extracting {file_path.name}...")
+            print(f"  [Gemini Flash] Extracting {file_path.name}...")
             result = structured_llm.invoke(prompt)
 
             raw_results.append({
@@ -107,7 +110,8 @@ def extract_node(state: ExtractionState) -> ExtractionState:
                 "data": result.model_dump() if result else {}
             })
 
-            time.sleep(2)
+            # Flash handles higher burst limits (15 RPM vs 2 RPM for Pro)
+            time.sleep(4) # 60s / 15 RPM = 4s stagger
 
         return {"raw_results": raw_results}
 
@@ -116,7 +120,7 @@ def extract_node(state: ExtractionState) -> ExtractionState:
         return {"errors": [str(e)], "raw_results": []}
 
 def map_to_ontology_node(state: ExtractionState) -> ExtractionState:
-    """Map the Gemini extraction back to our complex Ontology (ExtractionResult)."""
+    """Map the Gemini extraction back to our complex Ontology."""
     raw_results = state.get("raw_results", [])
     final_results = state.get("final_results", [])
 
@@ -124,7 +128,6 @@ def map_to_ontology_node(state: ExtractionState) -> ExtractionState:
         source_id = res["source_id"]
         data = res["data"]
 
-        # Save output to disk
         issue_num = source_id.split("_")[1].replace(".json", "")
         result_path = config.EXTRACTION_DIR / f"langgraph_extraction_{issue_num}.json"
 
@@ -168,10 +171,10 @@ def run_langgraph_pipeline(limit: int = None):
         issue_files = issue_files[:limit]
 
     print(f"\n{'='*60}")
-    print(f"LANGGRAPH + GEMINI EXTRACTION PIPELINE")
+    print(f"LANGGRAPH + GEMINI FLASH EXTRACTION PIPELINE")
     print(f"{'='*60}")
     print(f"  Target: {len(issue_files)} files")
-    print(f"  Model: gemini-1.5-pro")
+    print(f"  Model: gemini-2.0-flash-exp")
 
     try:
         app = build_extraction_graph()
